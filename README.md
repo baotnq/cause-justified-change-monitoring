@@ -4,6 +4,30 @@
 
 Status: design + reference implementation in progress. All examples are synthetic; no proprietary data or code.
 
+## TL;DR
+
+Money-like state should never move without an authorized cause. Watch the store's **own change feed** — a channel the application cannot influence, so it sees writes that bypass every service — watch the bus of **authorized business events**, and once per window subtract one set of actor ids from the other. Whatever is left changed with nothing to justify it.
+
+The check is an exact set difference over bit vectors, not a heuristic or a sampled reconciliation: `O(N/64)` per window regardless of traffic, **1–3 minutes** from write to alert at 60-second windows. The monitor is subscribe-only — no code, schema or latency added to the audited system, and it can be removed as easily as it was added, which is what makes it an *independent* control rather than one more feature of the same code base.
+
+```
+             writes, including any that bypass the application
+                                    │
+             ┌──────────────────────▼───────┐   ┌──────────────────────────────┐
+             │  store change feed           │   │  authorized business events  │
+             │  (CDC / keyspace notif.)     │   │  (signed bus, known producer)│
+             └──────────────┬───────────────┘   └───────────────┬──────────────┘
+                  Changed(w)│                       Justified(w)│
+                            └──────────►  V(w) = Changed \ Justified  ◄──────────┘
+                                                    │
+                                    V(w) ≠ ∅  ──►  alert: state moved, no authorized cause
+                                                    │
+                                    final checkpoint (settlement / withdrawal)
+                                    re-checks all parties, all legs atomic
+```
+
+*Written by Bao Trinh — MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795), 15+ years building correctness-critical systems: crypto exchange core (deterministic matching, atomic settlement, MPC custody), core banking and payments. This pattern is generalized from an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform; re-derived here from the pattern, with no production data or code.*
+
 ---
 
 ## Part A — The abstract method
@@ -15,7 +39,7 @@ Status: design + reference implementation in progress. All examples are syntheti
 - **Windows.** Time is cut into windows `w` (sliding, with a grace period; comparisons use event timestamps, not arrival time).
 - **Two observation channels, independent of each other:**
   - **Change channel** — reports *that* an actor's protected state was written, from the store itself (change feed / CDC). It sees every write, including writes that bypass the application.
-  - **Cause channel** — reports authorized business events (deposit, order matched, transfer, bet debit, cashout credit…) from a trusted bus, with producer identity.
+  - **Cause channel** — reports authorized business events (deposit, order matched, transfer, payout credit…) from a trusted bus, with producer identity.
 
 For each window define two sets of actor identities:
 
@@ -47,7 +71,7 @@ Optionally, `Justified` can be split by actor class (users / admins / systems) t
 
 The invariant is checked per window, so the window length trades **detection latency** against **cost**:
 
-- Short windows (e.g. 60 s, "realtime"): violations surface within a minute or two; more windows to close, more bit vectors to keep, more chances of skew at window edges (mitigated by grace).
+- Short windows (e.g. 60 s, "realtime"): violations surface **1–3 minutes** after the write (one window to close plus the grace period); more windows to close, more bit vectors to keep, more chances of skew at window edges (mitigated by grace).
 - Long windows (minutes to hours): fewer set operations and less memory; detection is slower; suitable as a second, cheaper tier over the same channels.
 
 Both tiers can run at once (60 s for alerts, hourly for a consolidated report). Whatever the length, the monitor stays **off the critical path**: it only subscribes to the change and cause channels; the application never waits on it, and the cost of closing a window is `O(N/64)` regardless of traffic.
@@ -76,7 +100,7 @@ Per window: `O(E)` to map and set bits for `E` observed events, plus `O(N/64)` f
 
 ### A6. Second layer — final checkpoint and failure audit
 
-Where the domain has a final money-moving step (settlement, payout, cashout), the earlier decision (a match, a win) is *not* final:
+Where the domain has a final money-moving step (settlement, payout, cashout), the earlier decision (a match, an awarded payout) is *not* final:
 
 - At settlement, re-check real balances and ban/blacklist state of **all** parties; succeed or fail **atomically for all legs**.
 - **Failed settlements are data.** A burst of failures tied to one actor is a first-class risk signal (e.g. one taker with a forged balance sweeping many makers). Downstream actions (withdrawal) consult the audit before proceeding.
@@ -166,7 +190,7 @@ Detection latency (write → alert) p50/p99 per window size (10 s / 60 s); cost 
 | Domain | Protected state | Change channel | Authorized causes | Final checkpoint |
 |---|---|---|---|---|
 | Exchange / payments | balances, on-chain | keyspace, CDC, chain | orders, matches, transfers | settlement, withdrawal |
-| iGaming | game wallet, RTP | store change feed | bet debit, cashout/reward credit with matching betId/round | cashout / reward |
+| Realtime gaming / rewards wallets | player wallet, payout ratio | store change feed | stake debit, payout/reward credit with matching round id | payout / reward |
 | Warehouse / logistics | stock levels | DB change feed | receipts, issues, transfers | goods issue |
 | IAM / config | permissions, config | IdP / cloud audit log | approved ticket, GitOps commit | apply to production |
 | ML pipelines | checkpoints, metrics, datasets | registry / object-store events | run id, experiment log, lineage | model promotion |
@@ -188,6 +212,6 @@ Runtime verification (Havelund; Leucker & Schallhart): monitors synthesized from
 - [ ] Amount-conservation extension
 - [ ] Optional: state the invariant in MFOTL and cross-check with MonPoly on the same trace
 
-## Author's note
+## License
 
-Generalized from an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform; re-derived here from the pattern, with no production data or code. Background: MSc in formal verification (JAIST; verified compiler in CafeOBJ; LNCS 10795), 15+ years building correctness-critical systems.
+Apache-2.0. Contributions and corrections are welcome — particularly counter-examples where the invariant is too strong or too weak for a domain.
