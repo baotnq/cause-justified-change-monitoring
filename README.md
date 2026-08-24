@@ -39,7 +39,7 @@ The check is an exact set difference over bit vectors, not a heuristic or a samp
 - **Windows.** Time is cut into windows `w` (sliding, with a grace period; comparisons use event timestamps, not arrival time).
 - **Two observation channels, independent of each other:**
   - **Change channel** — reports *that* an actor's protected state was written, from the store itself (change feed / CDC). It sees every write, including writes that bypass the application.
-  - **Cause channel** — reports authorized business events (deposit, order matched, transfer, payout credit…) from a trusted bus, with producer identity.
+  - **Cause channel** — reports authorized business events (deposit, order matched, transfer, disbursement approved…) from a trusted bus, with producer identity.
 
 For each window define two sets of actor identities:
 
@@ -100,7 +100,7 @@ Per window: `O(E)` to map and set bits for `E` observed events, plus `O(N/64)` f
 
 ### A6. Second layer — final checkpoint and failure audit
 
-Where the domain has a final money-moving step (settlement, payout, cashout), the earlier decision (a match, an awarded payout) is *not* final:
+Where the domain has a final money-moving step (settlement, disbursement, withdrawal), the earlier decision (a match, an approved transfer) is *not* final:
 
 - At settlement, re-check real balances and ban/blacklist state of **all** parties; succeed or fail **atomically for all legs**.
 - **Failed settlements are data.** A burst of failures tied to one actor is a first-class risk signal (e.g. one taker with a forged balance sweeping many makers). Downstream actions (withdrawal) consult the audit before proceeding.
@@ -190,7 +190,7 @@ Detection latency (write → alert) p50/p99 per window size (10 s / 60 s); cost 
 | Domain | Protected state | Change channel | Authorized causes | Final checkpoint |
 |---|---|---|---|---|
 | Exchange / payments | balances, on-chain | keyspace, CDC, chain | orders, matches, transfers | settlement, withdrawal |
-| Realtime gaming / rewards wallets | player wallet, payout ratio | store change feed | stake debit, payout/reward credit with matching round id | payout / reward |
+| Loyalty & rewards | point balances, entitlement tiers | store change feed / CDC | accrual and redemption events with matching transaction id | redemption |
 | Warehouse / logistics | stock levels | DB change feed | receipts, issues, transfers | goods issue |
 | IAM / config | permissions, config | IdP / cloud audit log | approved ticket, GitOps commit | apply to production |
 | ML pipelines | checkpoints, metrics, datasets | registry / object-store events | run id, experiment log, lineage | model promotion |
