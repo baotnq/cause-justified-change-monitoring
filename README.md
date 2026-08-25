@@ -39,17 +39,17 @@ A `balance.updated` event does not justify itself. It must be backed by an order
                                     re-checks all parties, all legs atomic
 ```
 
+> **Labels.** `[T]` — verified here: reproducible from the tests or benchmarks in this repository. `[A]` — assumption or estimate: stated, not verified.
+
 ## What the check costs
 
-Closing a window costs `O(N/64)` over the id space. That cost does not grow with the number of events the window saw, because the sets are bit vectors and the difference is word-wise. Ten million actors cost 234 µs and 1.25 MB per set. Ingest costs one bit per observed event, measured at 5.4 ns. Detection latency is one window plus grace: **1–3 minutes** at 60-second windows.
+Closing a window costs `O(N/64)` over the id space `[T]`. That cost does not grow with the number of events the window saw, because the sets are bit vectors and the difference is word-wise. Ten million actors cost 234 µs and 1.25 MB per set. Ingest costs one bit per observed event, measured at 5.4 ns. Detection latency is one window plus grace: **1–3 minutes** at 60-second windows `[T]`.
 
 The monitor subscribes and nothing else. It adds no code and no schema change to the audited system, and nothing to any request path. Removing it stops the monitoring and changes nothing else. That property is what makes it an independent control rather than one more feature of the same code base.
 
-The change feed itself is not free. Turning on Redis keyspace notifications costs the store about 28% of its pipelined write ceiling. That cost matters only if the store already runs at that ceiling. Method, numbers and mitigations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+The change feed itself is not free. Turning on Redis keyspace notifications costs the store about 28% of its pipelined write ceiling `[T]`. That cost matters only if the store already runs at that ceiling. Method, numbers and mitigations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-Status: the reference implementation runs; scenarios and benchmarks reproduce from a clean clone. All examples are synthetic. No proprietary data or code appears here.
-
-*Written by Bao Trinh. MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795). 15+ years on correctness-critical systems: crypto exchange core (deterministic matching, atomic settlement, MPC custody), core banking and payments. This pattern generalizes an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform. It is re-derived here from the pattern, with no production data or code.*
+**Status** `[T]` — the reference implementation runs. Scenarios and benchmarks reproduce from a clean clone. All examples are synthetic. No proprietary data or code appears here.
 
 ## Running it
 
@@ -183,6 +183,8 @@ Set operations on millions of actor ids per window must be cheap and exact. Repr
 
 Alternatives and why not: hash sets (memory ~10–50× larger, per-element cost); Bloom filters (false positives are unacceptable for accusations); sorted id lists with merge (fine but slower and larger); compressed bitmaps (Roaring) are a good choice when ids are sparse — the same algebra applies.
 
+The bit vector is one realization of the set algebra, not part of the method. It presumes a dense, bounded id space, and the id map of A4 exists to supply one. A large or sparse id space calls for a different structure under the same invariant. Choosing and tuning that structure for a particular system is outside the scope of this document.
+
 ### A4. Identity mapping (required)
 
 Real systems use string identities (UUIDs, external ids). Bitmaps need dense integers. The method therefore includes an explicit **id map** `uuid ⇄ int32`:
@@ -272,7 +274,7 @@ The pattern is the same; the words differ by audience. When talking to each comm
 
 ## Part D — What was measured
 
-Full method, caveats and what is *not* covered: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Apple M1, Go 1.26, Redis 8.10.1, single machine.
+All rows are `[T]`. Full method, caveats and what is *not* covered: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Apple M1, Go 1.26, Redis 8.10.1, single machine.
 
 | | Result |
 |---|---|
@@ -293,10 +295,12 @@ Window skew is covered by test rather than benchmark — see `TestGraceHoldsTheW
 - Window skew → false positives: sliding windows, grace, event timestamps.
 - Forged causes: producer identity, signed events, nested invariant.
 - Id-map integrity: protected, append-only, periodically re-derived.
-- Correlated compromise (store owned → change feed silenced): second independent change source; separate credentials/infra; audit the audit.
+- Correlated compromise (store owned → change feed silenced): second independent change source; separate credentials/infra; audit the audit. `[A]` — only the Redis feed is implemented; the second source is designed, not built.
 - Existence, not amount: bit vectors answer "was there a cause", not "does Δstate equal the sum of causes". Extension: per-actor sums alongside bit vectors, which checks conservation rather than justification alone. In a full deployment the amount layer lives in the ledger. It rests on four checks: double-entry entries where debits equal credits per transaction; a ledger-wide equation, Assets = Liabilities + Equity per currency; hash-chained immutable entries for tamper evidence; and reconciliation of ledger balances against on-chain wallet balances. The cause-justified monitor and the ledger checks answer different questions and complement each other.
 
 ## Part F — Generalization
+
+`[A]` except the exchange and AI-agent rows, which are realized in `cmd/scenario`. The others are mappings, not deployments.
 
 | Domain | Protected state | Change channel | Authorized causes | Final checkpoint |
 |---|---|---|---|---|
@@ -309,9 +313,9 @@ Window skew is covered by test rather than benchmark — see `TestGraceHoldsTheW
 
 ## Part G — Related work (short)
 
-**Closest prior art.** US patent 8,886,570 ("Hacker-resistant balance monitoring") detects illicit modification of a fast wallet store or a ledger by periodically deriving a balance from ledger data and comparing it to the wallet balance, with detection frequency as a performance/security trade-off. It compares *values*; this pattern checks *existence of an authorized cause* on an event-driven change feed with bit-vector set difference — the two are complementary (see "Existence, not amount" in Part E). Using store change feeds (e.g. Redis keyspace notifications) as a transparent audit hook that logs every write without touching application code is documented practice; this pattern adds the cross-check against a cause channel. Fintech engineering guidance frames integrity as three complementary tiers — by construction, runtime checks, post-factum reconciliation — and this monitor sits in the runtime tier while staying off the critical path.
+**Closest prior art** `[A]` — the citation below is recorded from a secondary reading and has not been checked against the patent register. **US patent 8,886,570** ("Hacker-resistant balance monitoring") detects illicit modification of a fast wallet store or a ledger by periodically deriving a balance from ledger data and comparing it to the wallet balance, with detection frequency as a performance/security trade-off. It compares *values*; this pattern checks *existence of an authorized cause* on an event-driven change feed with bit-vector set difference — the two are complementary (see "Existence, not amount" in Part E). Using store change feeds (e.g. Redis keyspace notifications) as a transparent audit hook that logs every write without touching application code is documented practice; this pattern adds the cross-check against a cause channel. Fintech engineering guidance frames integrity as three complementary tiers — by construction, runtime checks, post-factum reconciliation — and this monitor sits in the runtime tier while staying off the critical path.
 
-I have not found the full combination (independent change feed + existence check by bit-vector set difference + short windows + nested invariant + failure audit) documented as a pattern in public sources; internal controls at exchanges and banks are rarely published, so no novelty claim is made.
+`[A]` I have not found the full combination (independent change feed + existence check by bit-vector set difference + short windows + nested invariant + failure audit) documented as a pattern in public sources; internal controls at exchanges and banks are rarely published, so no novelty claim is made.
 
 Runtime verification (Havelund; Leucker & Schallhart): monitors synthesized from formal properties over event streams. Trace validation of distributed programs against TLA+ specifications. Ledger practice: double-entry as a write-time constraint, immutability, idempotency, bi-temporality; batch "detective" reconciliation (T+1). Tamper-evident logs and provenance (Crosby & Wallach; W3C PROV). Runtime verification of AI-agent actions (authorization bound to effect; verified agent policies).
 
@@ -329,3 +333,7 @@ Runtime verification (Havelund; Leucker & Schallhart): monitors synthesized from
 ## License
 
 Apache-2.0. Contributions and corrections are welcome — particularly counter-examples where the invariant is too strong or too weak for a domain.
+
+---
+
+*Written by Bao Trinh. MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795). 15+ years on correctness-critical systems: crypto exchange core (deterministic matching, atomic settlement, MPC custody), core banking and payments. This pattern generalizes an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform. It is re-derived here from the pattern, with no production data or code.*
