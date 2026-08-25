@@ -24,20 +24,25 @@ A `balance.updated` event does not justify itself. It must be backed by an order
 > **Symbols.** `A \ B` is set difference: the members of `A` that are not in `B`. `A ⊆ B` means every member of `A` is also a member of `B`. `∀w` means the property holds in each window separately. Worked example in [A2](#a2-invariant-and-violation-set).
 
 ```
-             writes, including any that bypass the application
-                                    │
-             ┌──────────────────────▼───────┐   ┌──────────────────────────────┐
-             │  store change feed           │   │  authorized business events  │
-             │  (CDC / keyspace notif.)     │   │  (signed bus, known producer)│
-             └──────────────┬───────────────┘   └───────────────┬──────────────┘
-                  Changed(w)│                       Justified(w)│
-                            └──────────►  V(w) = Changed \ Justified  ◄──────────┘
-                                                    │
-                                    V(w) ≠ ∅  ──►  alert: state moved, no authorized cause
-                                                    │
-                                    final checkpoint (settlement / withdrawal)
-                                    re-checks all parties, all legs atomic
+     writes, including any that bypass the application
+                     |
+                     v
+     +------------------------------+     +------------------------------+
+     |  store change feed           |     |  authorized business events  |
+     |  (CDC / keyspace notif.)     |     |  (signed bus, known producer)|
+     +------------------------------+     +------------------------------+
+                     |                                    |
+                Changed(w)                          Justified(w)
+                     |                                    |
+                     +-----------------+------------------+
+                                       |
+                                       v
+                       V(w) = Changed(w) \ Justified(w)
+                                       |
+                                       +--> alert: state moved, no authorized cause
 ```
+
+The final checkpoint of A6 is a second, independent layer over the same system. It is not downstream of `V(w)`: the monitor detects after the fact, the checkpoint refuses before the effect.
 
 > **Labels.** `[T]` — verified here: reproducible from the tests or benchmarks in this repository. `[A]` — assumption or estimate: stated, not verified.
 
@@ -120,8 +125,8 @@ window 12:00:00 – 12:01:00
   Changed(w)   = { alice, mallory }      the store reported a write for these two
   Justified(w) = { alice, dave }         these two had an authorized business event
 
-  Changed \ Justified = { mallory }      ← moved with nothing to justify it
-  Justified \ Changed = { dave }         ← authorized, but no write was observed
+  Changed \ Justified = { mallory }      <-- moved with nothing to justify it
+  Justified \ Changed = { dave }         <-- authorized, but no write was observed
 ```
 
 `alice` appears in both and is of no further interest: her balance moved and there is a cause on record for it. The two leftovers are the whole output of the method — and they are **not** the same kind of finding, which is what the invariant is about.
