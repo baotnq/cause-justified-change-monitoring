@@ -1,16 +1,27 @@
 # Cause-Justified Change Monitoring
 
-*A runtime-verification pattern for money-like state: every observed change must be justified by an authorized cause. Checked near-real-time with set algebra over compact bit vectors, on an observation channel independent of the application's write path. Presented first as an abstract method, then as one concrete realization on Redis.*
+Every observed change to money-like state must have an authorized cause. This document states that requirement as an invariant, checks it exactly, and names what fails.
 
-Status: reference implementation runs; scenarios and benchmarks reproduce from a clean clone (see **Running it** below). All examples are synthetic; no proprietary data or code.
+```
+Invariant:   ∀w.  Changed(w) ⊆ Justified(w)
+Violations:  V(w) = Changed(w) \ Justified(w)
+```
 
-## TL;DR
+In every window `w`, every actor whose state was written must also be an actor with an authorized cause. `V(w)` holds what is left over: actors whose state moved with nothing on record to justify it. A non-empty `V(w)` means a bypass write, insider tampering, or a lost cause event.
 
-Money-like state should never move without an authorized cause. Watch the store's **own change feed** — a channel the application cannot influence, so it sees writes that bypass every service — watch the bus of **authorized business events**, and once per window subtract one set of actor ids from the other. Whatever is left changed with nothing to justify it.
+The check is a set difference, so `V(w)` is exact. It is not a score, not a threshold, and not a sampled reconciliation.
 
-The check is an exact set difference over bit vectors, not a heuristic or a sampled reconciliation: `O(N/64)` per window regardless of traffic, **1–3 minutes** from write to alert at 60-second windows. The monitor is subscribe-only — no code and no schema change in the audited system, nothing added to any request path, and it can be removed as easily as it was added, which is what makes it an *independent* control rather than one more feature of the same code base.
+`Changed(w)` comes from the store's own change feed — a channel the application cannot influence, so it reports writes that bypassed every service. `Justified(w)` comes from the bus of authorized business events, each carrying the identity of the service that published it. The two channels are independent of each other by construction. That independence is what the method rests on.
 
-It is not free, though, and the measurements say where the cost sits: turning the change feed on costs the *store* about 28% of its pipelined write ceiling, which matters only if that ceiling is where you already are. Numbers, method and mitigations in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+A second invariant constrains the cause channel itself, so that an attacker holding publish access cannot supply the missing cause:
+
+```
+BalanceUpdated(w) ⊆ (Ordered ∪ Matched ∪ Transferred)(w)
+```
+
+A `balance.updated` event does not justify itself. It must be backed by an order, a match or a transfer for the same actor in the same window.
+
+> **Symbols.** `A \ B` is set difference: the members of `A` that are not in `B`. `A ⊆ B` means every member of `A` is also a member of `B`. `∀w` means the property holds in each window separately. Worked example in [A2](#a2-invariant-and-violation-set).
 
 ```
              writes, including any that bypass the application
@@ -28,7 +39,17 @@ It is not free, though, and the measurements say where the cost sits: turning th
                                     re-checks all parties, all legs atomic
 ```
 
-*Written by Bao Trinh — MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795), 15+ years building correctness-critical systems: crypto exchange core (deterministic matching, atomic settlement, MPC custody), core banking and payments. This pattern is generalized from an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform; re-derived here from the pattern, with no production data or code.*
+## What the check costs
+
+Closing a window costs `O(N/64)` over the id space. That cost does not grow with the number of events the window saw, because the sets are bit vectors and the difference is word-wise. Ten million actors cost 234 µs and 1.25 MB per set. Ingest costs one bit per observed event, measured at 5.4 ns. Detection latency is one window plus grace: **1–3 minutes** at 60-second windows.
+
+The monitor subscribes and nothing else. It adds no code and no schema change to the audited system, and nothing to any request path. Removing it stops the monitoring and changes nothing else. That property is what makes it an independent control rather than one more feature of the same code base.
+
+The change feed itself is not free. Turning on Redis keyspace notifications costs the store about 28% of its pipelined write ceiling. That cost matters only if the store already runs at that ceiling. Method, numbers and mitigations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+Status: the reference implementation runs; scenarios and benchmarks reproduce from a clean clone. All examples are synthetic. No proprietary data or code appears here.
+
+*Written by Bao Trinh. MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795). 15+ years on correctness-critical systems: crypto exchange core (deterministic matching, atomic settlement, MPC custody), core banking and payments. This pattern generalizes an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform. It is re-derived here from the pattern, with no production data or code.*
 
 ## Running it
 
@@ -110,17 +131,9 @@ Invariant:   ∀w.  Changed(w) ⊆ Justified(w)
 Violations:  V(w) = Changed(w) \ Justified(w)
 ```
 
-In words: *in every window, every actor whose state was written must also be an actor with an authorized cause.* `V(w)` is exact — a set difference, not a score, not a threshold, not a sampled reconciliation. A non-empty `V(w)` means someone's state moved with no authorized cause in that window: a bypass write, insider tampering, or a lost cause event (which is worth an alert of its own).
+The nested invariant on the cause channel is stated at the top of this document. It exists because an attacker with publish access would otherwise supply the missing cause and satisfy the outer invariant.
 
-A **nested invariant** raises the bar against forged causes: the cause channel's own events must themselves have a deeper cause,
-
-```
-BalanceUpdated(w) ⊆ (Ordered ∪ Matched ∪ Transferred)(w)
-```
-
-so an attacker who can publish a fake `balance.updated` still cannot manufacture the order or transfer behind it.
-
-Optionally, `Justified` can be split by actor class (users / admins / systems) to give class-specific policies (e.g. admin-caused changes are always flagged for review even if "authorized").
+`Justified` can also be split by actor class — users, admins, systems — to carry class-specific policy. An example: a change caused by an admin goes to review even when the cause is authorized.
 
 ### A2a. Why containment, and not equality
 
@@ -132,13 +145,13 @@ Equality is a stronger claim, and the extra strength is all in the second direct
 - **Authorized events that legitimately move nothing.** A transfer that nets to zero across legs. An idempotent retry of an operation already applied. An order matched in this window whose settlement falls into the next. A correction that restores a previous value. All authorized, all real, none of them produce a write for that actor in that window.
 - **A change channel that is late, lossy, or silenced.** Redis keyspace notifications are fire-and-forget pub/sub with no replay (see B, and `channels.KeyspaceFeed`). A momentary lag puts `dave` on one side of the comparison and not the other, through no fault of `dave`.
 
-Under equality, every one of those becomes a **violation**, and the monitor starts accusing actors who did nothing. That failure is not cosmetic — it is the standard way this class of control dies.
+Under equality, every one of those becomes a **violation**, and the monitor starts accusing actors who did nothing. That failure is not cosmetic. It is the standard way this class of control stops being trusted.
 
-**The danger of the false alert, in numbers.** Detection is not the hard part of security operations; *being believed* is. In the 2026 State of the SOC data, [46% of all alerts turn out to be false positives](https://www.stamus-networks.com/blog/what-the-2025-sans-detection-response-survey-reveals-false-positives-alert-fatigue-are-worsening), with enterprise rates frequently above 50% and reported as high as 80%; [73% of security teams name false positives as their single biggest detection challenge](https://www.stamus-networks.com/blog/what-the-2025-sans-detection-response-survey-reveals-false-positives-alert-fatigue-are-worsening), and analysts spend [over a quarter of their time working alerts that turn out to be nothing](https://www.dropzone.ai/glossary/alert-fatigue-in-cybersecurity-definition-causes-modern-solutions-5tz9b). In this pattern's own domain it is worse: [up to 95% of AML transaction-monitoring alerts are false positives](https://www.trapets.com/resources/blog/flagging-false-positives-in-aml-how-banks-can-reduce-98-wasted-alerts), which is why "we added another rule" is met with resignation rather than enthusiasm by the people who have to work the queue.
+**The danger of the false alert, in numbers.** Detection is not the hard part of security operations; *being believed* is. In the 2026 State of the SOC data, [46% of all alerts turn out to be false positives](https://www.stamus-networks.com/blog/what-the-2025-sans-detection-response-survey-reveals-false-positives-alert-fatigue-are-worsening). Enterprise rates run above 50% and reach 80%. [73% of security teams name false positives as their single biggest detection challenge](https://www.stamus-networks.com/blog/what-the-2025-sans-detection-response-survey-reveals-false-positives-alert-fatigue-are-worsening), and analysts spend [over a quarter of their time working alerts that turn out to be nothing](https://www.dropzone.ai/glossary/alert-fatigue-in-cybersecurity-definition-causes-modern-solutions-5tz9b). In this pattern's own domain it is worse: [up to 95% of AML transaction-monitoring alerts are false positives](https://www.trapets.com/resources/blog/flagging-false-positives-in-aml-how-banks-can-reduce-98-wasted-alerts), Compliance teams therefore read each new rule as added workload before they read it as added coverage.
 
-The consequence is not that the noisy alert is ignored. It is that the **real** one is. Target's FireEye deployment fired on the breach malware, repeatedly, [naming even the attackers' staging servers](https://www.scworld.com/news/target-did-not-respond-to-fireeye-security-alerts-prior-to-breach-according-to-report) — and [nobody acted for nearly three weeks](https://medium.com/@infosecguy_88900/the-target-breach-noisy-environments-alert-fatigue-and-the-challenge-of-connecting-the-dots-a7cc1f774204), because a genuinely dangerous alert looked exactly like the hundreds of harmless ones before it. Forty million payment cards. The detection worked; the credibility of the channel it arrived on did not.
+The consequence is not that the noisy alert is ignored. It is that the **real** one is. Target's FireEye deployment fired on the breach malware repeatedly, and [named the attackers' staging servers](https://www.scworld.com/news/target-did-not-respond-to-fireeye-security-alerts-prior-to-breach-according-to-report). [Nobody acted for nearly three weeks](https://medium.com/@infosecguy_88900/the-target-breach-noisy-environments-alert-fatigue-and-the-challenge-of-connecting-the-dots-a7cc1f774204). A genuinely dangerous alert looked exactly like the hundreds of harmless ones before it. The breach exposed 40 million payment card records. The detection worked. The credibility of the channel it arrived on did not.
 
-So an alert nobody believes is worse than no alert at all: it costs the same to operate, and it buys a false sense of coverage. A monitor that accuses innocent actors twice a day will be muted within a month, and on the day it is right, the mute will still be in place.
+An alert nobody believes is worse than no alert at all. It costs the same to operate, and it supplies a false reading of coverage. A monitor that accuses innocent actors twice a day will be muted within a month, and on the day it is right, the mute will still be in place.
 
 Hence the asymmetry, which is a design decision and not an omission. Both differences are computed; they are named differently, mean different things, and go to different people:
 
@@ -147,7 +160,7 @@ Hence the asymmetry, which is a design decision and not an omission. Both differ
 | `Changed \ Justified` | `unauthorized_change` | State moved with no authorized cause. An accusation. | Security — investigate the actor |
 | `Justified \ Changed` | `missing_change` | An authorized cause with no observed write. Not an accusation. | Platform — investigate the feed |
 
-The second direction still has to be watched, and for a sharp reason: **silencing the change channel is the cleanest way to hide from this monitor.** Switch off `notify-keyspace-events` and `Changed(w)` is empty, so `V(w)` is empty, and every window reports clean forever. `missing_change` is what makes that attack visible — the causes keep arriving while the writes stop being observed. It is the monitor watching its own eyes, not an accusation against anyone.
+The second direction still has to be watched, for one specific reason: **silencing the change channel is the most direct way to evade this monitor.** Switch off `notify-keyspace-events` and `Changed(w)` is empty, so `V(w)` is empty, and every window reports clean forever. `missing_change` makes that evasion visible: the causes keep arriving while the writes stop being observed. The alert reports on the monitor's own coverage. It accuses no one.
 
 Stated as a rule the implementation follows throughout: **never make an accusation the evidence does not support.** The invariant is the direction where the evidence is conclusive — a write was observed and no authorization exists for it. The other direction is a question, and it is reported as one.
 
@@ -203,7 +216,7 @@ In the original system this shows up as three outer audits (user/fraud, on-chain
 
 ### A8. What this is, in one line
 
-A runtime monitor for the safety property "every effect has an authorized cause", implemented as an exact set difference over compact bit vectors, fed by an observation channel independent of the write path; complemented by an atomic final checkpoint that audits its own failures.
+A runtime monitor for the safety property "every effect has an authorized cause". It computes an exact set difference over compact bit vectors, fed by an observation channel independent of the write path. An atomic final checkpoint completes it, and that checkpoint audits its own failures.
 
 ---
 
@@ -223,7 +236,7 @@ A runtime monitor for the safety property "every effect has an authorized cause"
 - `BITOP NOT` produces a string **exactly as long as its input**, and
 - `BITOP AND` zero-pads shorter operands to the length of the longest.
 
-So if the highest id present in `justified` is lower than the highest id in `changed`, the inverted vector is short, the padding supplies zero bits, and every violating actor above that id is silently ANDed away — **false negatives, exactly at the actors the monitor exists to catch.** Fix: pin every window's bitmaps to a fixed capacity when the window opens (`SETBIT aud:justified:{w} N-1 0`, same for `changed`), so all vectors are `N/8` bytes and the algebra is total. Same care applies to any library that stores bitmaps length-trimmed.
+Suppose the highest id present in `justified` is lower than the highest id in `changed`. The inverted vector is then short, and the padding supplies zero bits where it should supply ones. Every violating actor above that id is silently ANDed away. The result is a **false negative, at exactly the actors the monitor exists to find.** Fix: pin every window's bitmaps to a fixed capacity when the window opens (`SETBIT aud:justified:{w} N-1 0`, same for `changed`), so all vectors are `N/8` bytes and the algebra is total. Same care applies to any library that stores bitmaps length-trimmed.
 
 The reverse set, `Justified \ Changed`, is not a violation but is worth its own alert: an authorized cause with no observed write means a dropped change event, a lagging feed, or a silenced channel — see Part E.
 
@@ -239,7 +252,7 @@ Nothing above is specific to Redis except convenience: the same method runs on a
 4. **Forged justification** — attacker publishes a fake `balance.updated` for an actor → caught by the nested invariant.
 5. **Settlement failure burst** — one taker with forged balance sweeps many makers → all legs fail atomically; failure burst raises a risk alert; a withdrawal for that actor is blocked.
 
-6. **AI agent without authorization** — the change channel is the tool-call log (every external side-effect an agent performs); the cause channel is the approved plan / authorization events; an agent that calls a payment or deployment tool with no approved step for it in the window lands in `V(w)`, and a "cause" event published by the agent itself (not by the approver) is rejected by producer identity.
+6. **AI agent without authorization** — the change channel is the tool-call log, holding every external side effect the agent performed. The cause channel is the approved plan. An agent that calls a payment or deployment tool with no approved step behind it in the window lands in `V(w)`. A "cause" event published by the agent itself, rather than by the approver, is rejected on producer identity.
 
 Each scenario is a script; expected output is a JSON alert `{type, actor_ids, window, evidence}`.
 
@@ -271,7 +284,7 @@ Full method, caveats and what is *not* covered: [docs/BENCHMARKS.md](docs/BENCHM
 | Window close in Redis, 10 M actors | **12.6 ms** |
 | Cost to the audited store | **−28%** pipelined write throughput with `Eh` notifications (−43% with `KEA`) |
 
-That last row is the one worth reading twice. The monitor adds no code to any request path — that is structural. But asking the store to publish a notification per write is real work, and calling that "zero overhead" would be a nicer sentence than it is a true one. It is invisible at 1% of a store's ceiling and expensive at 100%; the mitigations are a replica feed or CDC, which Part E already recommends for other reasons.
+The last row states the cost this design does impose. The monitor adds no code to any request path; that property is structural. Asking the store to publish a notification on every write is real work, and "zero overhead" would overstate the result. The cost is invisible at 1% of a store's ceiling and expensive at 100%. The mitigations are a replica feed or CDC, which Part E already recommends for other reasons.
 
 Window skew is covered by test rather than benchmark — see `TestGraceHoldsTheWindowOpen` and `TestEventAfterGraceIsReportedAsLate`.
 
@@ -281,7 +294,7 @@ Window skew is covered by test rather than benchmark — see `TestGraceHoldsTheW
 - Forged causes: producer identity, signed events, nested invariant.
 - Id-map integrity: protected, append-only, periodically re-derived.
 - Correlated compromise (store owned → change feed silenced): second independent change source; separate credentials/infra; audit the audit.
-- Existence, not amount: bit vectors answer "was there a cause", not "does Δstate equal the sum of causes". Extension: per-actor sums alongside bit vectors (conservation, not just justification). In a full deployment the amount layer lives in the ledger: double-entry entries (debits = credits per transaction), a ledger-wide equation check (Assets = Liabilities + Equity per currency), hash-chained immutable entries for tamper evidence, and reconciliation of ledger balances against on-chain wallet balances; the cause-justified monitor and the ledger checks are complementary.
+- Existence, not amount: bit vectors answer "was there a cause", not "does Δstate equal the sum of causes". Extension: per-actor sums alongside bit vectors, which checks conservation rather than justification alone. In a full deployment the amount layer lives in the ledger. It rests on four checks: double-entry entries where debits equal credits per transaction; a ledger-wide equation, Assets = Liabilities + Equity per currency; hash-chained immutable entries for tamper evidence; and reconciliation of ledger balances against on-chain wallet balances. The cause-justified monitor and the ledger checks answer different questions and complement each other.
 
 ## Part F — Generalization
 
