@@ -82,12 +82,35 @@ Justified(w) = { a | cause channel reports an authorized event with subject a du
 
 ### A2. Invariant and violation set
 
+Three symbols do all the work here, so they are worth stating plainly before they are used.
+
+| | Read it as | |
+|---|---|---|
+| `A \ B` | **set difference** — the members of `A` that are **not** in `B` | Not division and not arithmetic subtraction. `{alice, mallory} \ {alice, dave}` is `{mallory}`. |
+| `A ⊆ B` | **`A` is contained in `B`** — every member of `A` is also a member of `B` | `B` may hold more besides. Equivalent to saying `A \ B` is empty. |
+| `A ∪ B` | **union** — everything in `A`, everything in `B` | Used once, in the nested invariant below. |
+| `∀w` | **for every window `w`** | The property has to hold in each window separately, not on average. |
+
+A worked window, to fix the idea. Three actors, one minute:
+
+```
+window 12:00:00 – 12:01:00
+
+  Changed(w)   = { alice, mallory }      the store reported a write for these two
+  Justified(w) = { alice, dave }         these two had an authorized business event
+
+  Changed \ Justified = { mallory }      ← moved with nothing to justify it
+  Justified \ Changed = { dave }         ← authorized, but no write was observed
+```
+
+`alice` appears in both and is of no further interest: her balance moved and there is a cause on record for it. The two leftovers are the whole output of the method — and they are **not** the same kind of finding, which is what the invariant is about.
+
 ```
 Invariant:   ∀w.  Changed(w) ⊆ Justified(w)
 Violations:  V(w) = Changed(w) \ Justified(w)
 ```
 
-`V(w)` is exact (set difference), not a heuristic. A non-empty `V(w)` means someone's state moved with no authorized cause in the window: bypass write, insider tampering, or a lost event (which is also worth an alert).
+In words: *in every window, every actor whose state was written must also be an actor with an authorized cause.* `V(w)` is exact — a set difference, not a score, not a threshold, not a sampled reconciliation. A non-empty `V(w)` means someone's state moved with no authorized cause in that window: a bypass write, insider tampering, or a lost cause event (which is worth an alert of its own).
 
 A **nested invariant** raises the bar against forged causes: the cause channel's own events must themselves have a deeper cause,
 
@@ -98,6 +121,35 @@ BalanceUpdated(w) ⊆ (Ordered ∪ Matched ∪ Transferred)(w)
 so an attacker who can publish a fake `balance.updated` still cannot manufacture the order or transfer behind it.
 
 Optionally, `Justified` can be split by actor class (users / admins / systems) to give class-specific policies (e.g. admin-caused changes are always flagged for review even if "authorized").
+
+### A2a. Why containment, and not equality
+
+The natural first reading of the invariant is that the two sets should simply be **equal** — every change has a cause, every cause has a change, so `Changed(w) = Justified(w)`. That is the wrong invariant, and getting it wrong is not a matter of taste. It decides whether the control survives contact with production.
+
+Equality is a stronger claim, and the extra strength is all in the second direction: it also asserts that `Justified \ Changed` is empty — that an authorized cause is always matched by an observed write **inside the same window**. In a perfectly correct system, that is routinely false:
+
+- **Window edges.** A service publishes `deposit.credited` at 11:59:59.9 and the write lands at 12:00:00.1. Two different windows. Grace (A2b) absorbs most of this and never all of it: whatever the grace period is, some event pair straddles the end of it.
+- **Authorized events that legitimately move nothing.** A transfer that nets to zero across legs. An idempotent retry of an operation already applied. An order matched in this window whose settlement falls into the next. A correction that restores a previous value. All authorized, all real, none of them produce a write for that actor in that window.
+- **A change channel that is late, lossy, or silenced.** Redis keyspace notifications are fire-and-forget pub/sub with no replay (see B, and `channels.KeyspaceFeed`). A momentary lag puts `dave` on one side of the comparison and not the other, through no fault of `dave`.
+
+Under equality, every one of those becomes a **violation**, and the monitor starts accusing actors who did nothing. That failure is not cosmetic — it is the standard way this class of control dies.
+
+**The danger of the false alert, in numbers.** Detection is not the hard part of security operations; *being believed* is. In the 2026 State of the SOC data, [46% of all alerts turn out to be false positives](https://www.stamus-networks.com/blog/what-the-2025-sans-detection-response-survey-reveals-false-positives-alert-fatigue-are-worsening), with enterprise rates frequently above 50% and reported as high as 80%; [73% of security teams name false positives as their single biggest detection challenge](https://www.stamus-networks.com/blog/what-the-2025-sans-detection-response-survey-reveals-false-positives-alert-fatigue-are-worsening), and analysts spend [over a quarter of their time working alerts that turn out to be nothing](https://www.dropzone.ai/glossary/alert-fatigue-in-cybersecurity-definition-causes-modern-solutions-5tz9b). In this pattern's own domain it is worse: [up to 95% of AML transaction-monitoring alerts are false positives](https://www.trapets.com/resources/blog/flagging-false-positives-in-aml-how-banks-can-reduce-98-wasted-alerts), which is why "we added another rule" is met with resignation rather than enthusiasm by the people who have to work the queue.
+
+The consequence is not that the noisy alert is ignored. It is that the **real** one is. Target's FireEye deployment fired on the breach malware, repeatedly, [naming even the attackers' staging servers](https://www.scworld.com/news/target-did-not-respond-to-fireeye-security-alerts-prior-to-breach-according-to-report) — and [nobody acted for nearly three weeks](https://medium.com/@infosecguy_88900/the-target-breach-noisy-environments-alert-fatigue-and-the-challenge-of-connecting-the-dots-a7cc1f774204), because a genuinely dangerous alert looked exactly like the hundreds of harmless ones before it. Forty million payment cards. The detection worked; the credibility of the channel it arrived on did not.
+
+So an alert nobody believes is worse than no alert at all: it costs the same to operate, and it buys a false sense of coverage. A monitor that accuses innocent actors twice a day will be muted within a month, and on the day it is right, the mute will still be in place.
+
+Hence the asymmetry, which is a design decision and not an omission. Both differences are computed; they are named differently, mean different things, and go to different people:
+
+| Computed | Alert | What it means | Who acts |
+|---|---|---|---|
+| `Changed \ Justified` | `unauthorized_change` | State moved with no authorized cause. An accusation. | Security — investigate the actor |
+| `Justified \ Changed` | `missing_change` | An authorized cause with no observed write. Not an accusation. | Platform — investigate the feed |
+
+The second direction still has to be watched, and for a sharp reason: **silencing the change channel is the cleanest way to hide from this monitor.** Switch off `notify-keyspace-events` and `Changed(w)` is empty, so `V(w)` is empty, and every window reports clean forever. `missing_change` is what makes that attack visible — the causes keep arriving while the writes stop being observed. It is the monitor watching its own eyes, not an accusation against anyone.
+
+Stated as a rule the implementation follows throughout: **never make an accusation the evidence does not support.** The invariant is the direction where the evidence is conclusive — a write was observed and no authorization exists for it. The other direction is a question, and it is reported as one.
 
 ### A2b. Window length is a tuning knob, not a fixed constant
 
