@@ -2,13 +2,15 @@
 
 *A runtime-verification pattern for money-like state: every observed change must be justified by an authorized cause. Checked near-real-time with set algebra over compact bit vectors, on an observation channel independent of the application's write path. Presented first as an abstract method, then as one concrete realization on Redis.*
 
-Status: design + reference implementation in progress. All examples are synthetic; no proprietary data or code.
+Status: reference implementation runs; scenarios and benchmarks reproduce from a clean clone (see **Running it** below). All examples are synthetic; no proprietary data or code.
 
 ## TL;DR
 
 Money-like state should never move without an authorized cause. Watch the store's **own change feed** — a channel the application cannot influence, so it sees writes that bypass every service — watch the bus of **authorized business events**, and once per window subtract one set of actor ids from the other. Whatever is left changed with nothing to justify it.
 
-The check is an exact set difference over bit vectors, not a heuristic or a sampled reconciliation: `O(N/64)` per window regardless of traffic, **1–3 minutes** from write to alert at 60-second windows. The monitor is subscribe-only — no code, schema or latency added to the audited system, and it can be removed as easily as it was added, which is what makes it an *independent* control rather than one more feature of the same code base.
+The check is an exact set difference over bit vectors, not a heuristic or a sampled reconciliation: `O(N/64)` per window regardless of traffic, **1–3 minutes** from write to alert at 60-second windows. The monitor is subscribe-only — no code and no schema change in the audited system, nothing added to any request path, and it can be removed as easily as it was added, which is what makes it an *independent* control rather than one more feature of the same code base.
+
+It is not free, though, and the measurements say where the cost sits: turning the change feed on costs the *store* about 28% of its pipelined write ceiling, which matters only if that ceiling is where you already are. Numbers, method and mitigations in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ```
              writes, including any that bypass the application
@@ -27,6 +29,36 @@ The check is an exact set difference over bit vectors, not a heuristic or a samp
 ```
 
 *Written by Bao Trinh — MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795), 15+ years building correctness-critical systems: crypto exchange core (deterministic matching, atomic settlement, MPC custody), core banking and payments. This pattern is generalized from an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform; re-derived here from the pattern, with no production data or code.*
+
+## Running it
+
+```sh
+docker compose up -d          # redis, nats, postgres
+make test                     # engine + Part C scenarios, no infrastructure needed
+make test-all                 # adds the Redis / NATS / Postgres integration tests
+make demo                     # drives the scenarios end to end against the real stack
+make bench                    # Part D
+```
+
+`make demo` writes to Redis the way an attacker with a shell would, publishes to
+NATS the way a service would, and prints what the monitor concluded:
+
+```
+  ok    1  normal traffic    u-alice          deposit with its cause: no alert
+  ok    2  direct tamper     u-mallory        unauthorized_change — HSET straight into the store, no service involved
+  ok    3b silenced feed     u-dave           missing_change — authorized cause, no write observed
+  ok    4  forged cause      u-eve            forged_cause — derived cause with no root cause behind it
+  ok    6  agent self-auth   agent-7-step-2   untrusted_producer — agent published its own authorization
+  ok    6  agent effect      agent-7-step-2   unauthorized_change — effect with no approved step
+
+  4 alerts, hash chain verified, head 1886a526f4dacf37
+```
+
+Layout: `internal/bitset` (the set algebra), `internal/idmap` (Part A4),
+`internal/monitor` (the invariant engine, infrastructure-free),
+`internal/checkpoint` (Part A6), `internal/redisbits` and `internal/channels`
+(Part B), `internal/report` (hash-chained evidence), `internal/pgstore`
+(history), `cmd/auditd` (the service), `cmd/scenario` (the demo).
 
 ---
 
@@ -173,9 +205,23 @@ The pattern is the same; the words differ by audience. When talking to each comm
 | final checkpoint | settlement, withdrawal gate | enforcement point | pre-execution authorization of effectful tools |
 | failure audit | failed-settlement risk signal | denied-action analytics | blocked-action analytics, agent misbehavior signal |
 
-## Part D — What to measure
+## Part D — What was measured
 
-Detection latency (write → alert) p50/p99 per window size (10 s / 60 s); cost of set operations vs. `N` (10^4 … 10^7); false positives from window skew with/without grace; application overhead (expected zero).
+Full method, caveats and what is *not* covered: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Apple M1, Go 1.26, Redis 8.10.1, single machine.
+
+| | Result |
+|---|---|
+| Pipeline latency, write → monitor knows | p50 **108 µs**, p99 **220 µs** over 500 writes |
+| Detection latency | pipeline + window + grace; the window term dominates, which is where **1–3 minutes** comes from |
+| Set difference, 10 M actors | **234 µs**, one allocation, **1.25 MB** per set — the figure A3 predicts |
+| Clean window (`IsEmpty`), 10 M actors | **51 µs** — the common case never lists members |
+| Ingest | **5.4 ns** per event in Go, ~**700 k events/sec** into Redis pipelined |
+| Window close in Redis, 10 M actors | **12.6 ms** |
+| Cost to the audited store | **−28%** pipelined write throughput with `Eh` notifications (−43% with `KEA`) |
+
+That last row is the one worth reading twice. The monitor adds no code to any request path — that is structural. But asking the store to publish a notification per write is real work, and calling that "zero overhead" would be a nicer sentence than it is a true one. It is invisible at 1% of a store's ceiling and expensive at 100%; the mitigations are a replica feed or CDC, which Part E already recommends for other reasons.
+
+Window skew is covered by test rather than benchmark — see `TestGraceHoldsTheWindowOpen` and `TestEventAfterGraceIsReportedAsLate`.
 
 ## Part E — Limitations and mitigations
 
@@ -206,10 +252,13 @@ Runtime verification (Havelund; Leucker & Schallhart): monitors synthesized from
 
 ## Roadmap
 
-- [ ] Reference implementation (docker-compose: Redis, NATS or Kafka, Postgres; audit service in Go)
-- [ ] Scenarios 1–5 as scripts with expected alerts as fixtures
-- [ ] Benchmarks (Part D) with plots
-- [ ] Amount-conservation extension
+- [x] Reference implementation — docker-compose (Redis, NATS, Postgres) and `cmd/auditd`
+- [x] Scenarios 1–6 with expected alerts as golden fixtures, plus `cmd/scenario` end to end
+- [x] Benchmarks (Part D) — [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+- [x] Amount-conservation extension — `Config.CheckAmounts`, scenario 7
+- [ ] Plots for the benchmark tables
+- [ ] CDC change channel (Postgres logical replication) as the second, durable source
+- [ ] Cluster-mode Redis: `BITOP` needs its operands in one hash slot
 - [ ] Optional: state the invariant in MFOTL and cross-check with MonPoly on the same trace
 
 ## License

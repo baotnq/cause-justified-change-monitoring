@@ -1,0 +1,49 @@
+# The stack the reference implementation runs against.
+#
+#   docker compose up -d
+#   make demo        # drives the Part C scenarios end to end
+#   make test-all    # unit tests plus the integration tests
+#
+# Nothing here is production configuration; it is the smallest thing that makes
+# the scenarios reproducible on a clean machine.
+
+services:
+  redis:
+    image: redis:8-alpine
+    ports: ["6379:6379"]
+    # Eh, not KEA: keyevent notifications for the hash commands the monitor
+    # actually reads. KEA publishes two messages per write and every event class,
+    # and costs ~15% more write throughput for nothing. See docs/BENCHMARKS.md.
+    command: >
+      redis-server
+      --notify-keyspace-events Eh$$lg
+      --save ""
+      --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  nats:
+    image: nats:2-alpine
+    ports: ["4222:4222"]
+    command: ["-DV"]
+    healthcheck:
+      test: ["CMD", "nats-server", "--help"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  postgres:
+    image: postgres:16-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_USER: audit
+      POSTGRES_PASSWORD: audit
+      POSTGRES_DB: audit
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
