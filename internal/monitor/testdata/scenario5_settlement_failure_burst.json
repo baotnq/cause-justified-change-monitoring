@@ -1,0 +1,45 @@
+{
+  "failures": [
+    {
+      "SettlementID": "stl-1",
+      "TS": "2026-01-01T12:00:10Z",
+      "Actor": "u-mallory",
+      "Reason": "insufficient balance: has 10, needs 500"
+    },
+    {
+      "SettlementID": "stl-2",
+      "TS": "2026-01-01T12:00:11Z",
+      "Actor": "u-mallory",
+      "Reason": "insufficient balance: has 10, needs 500"
+    },
+    {
+      "SettlementID": "stl-3",
+      "TS": "2026-01-01T12:00:12Z",
+      "Actor": "u-mallory",
+      "Reason": "insufficient balance: has 10, needs 500"
+    },
+    {
+      "SettlementID": "stl-4",
+      "TS": "2026-01-01T12:00:13Z",
+      "Actor": "u-mallory",
+      "Reason": "insufficient balance: has 10, needs 500"
+    }
+  ],
+  "risk_alerts": [
+    {
+      "actor": "u-mallory",
+      "window_start": "2026-01-01T12:00:00Z",
+      "failures": 4,
+      "counterparties": [
+        "u-dave"
+      ],
+      "reason": "settlement failure burst"
+    }
+  ],
+  "settlement_errors": [
+    "settlement stl-1 rejected: u-mallory: insufficient balance: has 10, needs 500",
+    "settlement stl-2 rejected: u-mallory: insufficient balance: has 10, needs 500",
+    "settlement stl-3 rejected: u-mallory: insufficient balance: has 10, needs 500",
+    "settlement stl-4 rejected: u-mallory: insufficient balance: has 10, needs 500"
+  ]
+}

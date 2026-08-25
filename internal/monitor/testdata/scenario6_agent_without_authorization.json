@@ -1,0 +1,29 @@
+[
+  {
+    "type": "unauthorized_change",
+    "window": {
+      "start": "2026-01-01T12:00:00Z",
+      "end": "2026-01-01T12:01:00Z"
+    },
+    "actor_ids": [
+      "agent-7/step-2"
+    ],
+    "evidence": {
+      "agent-7/step-2#0": "change from tool-call-log at 2026-01-01T12:00:20Z delta=0"
+    }
+  },
+  {
+    "type": "untrusted_producer",
+    "window": {
+      "start": "2026-01-01T12:00:00Z",
+      "end": "2026-01-01T12:01:00Z"
+    },
+    "actor_ids": [
+      "agent-7/step-2"
+    ],
+    "evidence": {
+      "kind": "plan.step.approved",
+      "producer": "agent-7"
+    }
+  }
+]

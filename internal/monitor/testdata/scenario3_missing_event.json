@@ -1,0 +1,15 @@
+[
+  {
+    "type": "unauthorized_change",
+    "window": {
+      "start": "2026-01-01T12:00:00Z",
+      "end": "2026-01-01T12:01:00Z"
+    },
+    "actor_ids": [
+      "u-bob"
+    ],
+    "evidence": {
+      "u-bob#0": "change from redis-keyspace at 2026-01-01T12:00:30Z delta=250"
+    }
+  }
+]

@@ -1,0 +1,15 @@
+[
+  {
+    "type": "missing_change",
+    "window": {
+      "start": "2026-01-01T12:00:00Z",
+      "end": "2026-01-01T12:01:00Z"
+    },
+    "actor_ids": [
+      "u-dave"
+    ],
+    "evidence": {
+      "u-dave#0": "cause deposit.credited from payment-service at 2026-01-01T12:00:15Z amount=500 ref=dep-u-dave"
+    }
+  }
+]

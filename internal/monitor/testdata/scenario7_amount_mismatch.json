@@ -1,0 +1,17 @@
+[
+  {
+    "type": "amount_mismatch",
+    "window": {
+      "start": "2026-01-01T12:00:00Z",
+      "end": "2026-01-01T12:01:00Z"
+    },
+    "actor_ids": [
+      "u-eve"
+    ],
+    "evidence": {
+      "sums:u-eve": "observed=100000 authorized=100",
+      "u-eve#0": "cause deposit.credited from payment-service at 2026-01-01T12:00:10Z amount=100 ref=dep-u-eve",
+      "u-eve#1": "change from redis-keyspace at 2026-01-01T12:00:10Z delta=100000"
+    }
+  }
+]
