@@ -1,6 +1,8 @@
 # Cause-Justified Change Monitoring
 
-Every observed change to money-like state must have an authorized cause. This document states that requirement as an invariant, checks it exactly, and names what fails.
+Author / contact: [linkedin.com/in/bao-trinh-ngoc-quoc](https://www.linkedin.com/in/bao-trinh-ngoc-quoc/)
+
+Every observed change to money-like state must have an authorized cause. This document states that requirement as an invariant, checks it exactly, and names what fails. In fintech the pattern is known as **realtime audit** (see the vocabulary mapping in Part C).
 
 ```
 Invariant:   ∀w.  Changed(w) ⊆ Justified(w)
@@ -269,7 +271,7 @@ The pattern is the same; the words differ by audience. When talking to each comm
 
 | This document | Fintech / exchange | Security | AI / agents |
 |---|---|---|---|
-| cause-justified change monitoring | realtime reconciliation, ledger integrity control | detective control, integrity monitoring | runtime guardrail, agent observability |
+| cause-justified change monitoring | realtime audit, realtime reconciliation, ledger integrity control | detective control, integrity monitoring | runtime guardrail, agent observability |
 | change channel | store change feed / CDC | telemetry of the protected asset | tool-call log, effect trace |
 | cause channel | business events (orders, transfers) | approved change tickets | approved plan, authorization events |
 | actor | account / user / admin / bot | principal | agent / tool identity |
@@ -301,6 +303,7 @@ Window skew is covered by test rather than benchmark — see `TestGraceHoldsTheW
 - Forged causes: producer identity, signed events, nested invariant.
 - Id-map integrity: protected, append-only, periodically re-derived.
 - Correlated compromise (store owned → change feed silenced): second independent change source; separate credentials/infra; audit the audit. `[A]` — only the Redis feed is implemented; the second source is designed, not built.
+- Correlated silence: `missing_change` presupposes that causes keep arriving, and fail-loud (A7) catches a monitor that is down — neither catches a subscription that goes softly blind (revoked credential, ACL change, topic rename: connection healthy, data zero, a silent hour indistinguishable from a quiet hour). Mitigation: inject a heartbeat synthetic cause into every window; a window with no observed heartbeat write is illegitimate by construction. This is not a service healthcheck — the injected cause can reuse existing synthetic transactions; the new part is the per-window check, recorded with the alert history. `[A]` designed, not built. Hole and fix contributed by [Abhijit Ghosh](https://www.linkedin.com/in/abhijit-ghosh-data/) (review thread, 09/2026).
 - Existence, not amount: bit vectors answer "was there a cause", not "does Δstate equal the sum of causes". Extension: per-actor sums alongside bit vectors, which checks conservation rather than justification alone. In a full deployment the amount layer lives in the ledger. It rests on four checks: double-entry entries where debits equal credits per transaction; a ledger-wide equation, Assets = Liabilities + Equity per currency; hash-chained immutable entries for tamper evidence; and reconciliation of ledger balances against on-chain wallet balances. The cause-justified monitor and the ledger checks answer different questions and complement each other.
 
 ## Part F — Generalization
@@ -330,6 +333,7 @@ Runtime verification (Havelund; Leucker & Schallhart): monitors synthesized from
 - [x] Scenarios 1–6 with expected alerts as golden fixtures, plus `cmd/scenario` end to end
 - [x] Benchmarks (Part D) — [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
 - [x] Amount-conservation extension — `Config.CheckAmounts`, scenario 7
+- [ ] Heartbeat synthetic cause per window — correlated-silence detection (Part E); contributed by [Abhijit Ghosh](https://www.linkedin.com/in/abhijit-ghosh-data/)
 - [ ] Plots for the benchmark tables
 - [ ] CDC change channel (Postgres logical replication) as the second, durable source
 - [ ] Cluster-mode Redis: `BITOP` needs its operands in one hash slot
@@ -341,4 +345,6 @@ Apache-2.0. Contributions and corrections are welcome — particularly counter-e
 
 ---
 
-*Written by Bao Trinh. MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795). 15+ years on correctness-critical systems: crypto exchange core (deterministic matching, atomic settlement, MPC custody), core banking and payments. This pattern generalizes an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform. It is re-derived here from the pattern, with no production data or code.*
+*Written by Bao Trinh. MSc in formal verification (JAIST, lab of Prof. Kokichi Futatsugi; verified compiler in CafeOBJ, Springer LNCS 10795). This pattern generalizes an audit module I designed for a spot exchange and reused on a second realtime, money-settled platform. It is re-derived here from the pattern, with no production data or code. Companion pattern, same principle turned on claims instead of state — no claim without a basis and a name: [github.com/baotnq/t-knowledge-system](https://github.com/baotnq/t-knowledge-system).*
+
+*Contributor: [Abhijit Ghosh](https://www.linkedin.com/in/abhijit-ghosh-data/) — correlated-silence hole and heartbeat fix (Part E, Roadmap).*
